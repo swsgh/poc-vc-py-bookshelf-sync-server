@@ -1,0 +1,11 @@
+# Local testing database cache structures
+*.db
+*.db-journal
+
+# Python compilation tracking folder paths
+__pycache__/
+*.pyc
+
+# Local runtime environment matrices
+venv/
+.env
