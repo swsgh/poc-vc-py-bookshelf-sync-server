@@ -1,0 +1,23 @@
+name: bookshelf
+
+services:
+  sync-server:
+    image: python:3.13-slim
+    working_dir: /data
+    init: true
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      PYTHONPATH: /app
+      PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - .:/app:ro
+      - ./data:/data
+    command:
+      - sh
+      - -c
+      - >-
+        python -m pip install --no-cache-dir -r /app/requirements.txt &&
+        exec python -m uvicorn main:app --app-dir /app --host 0.0.0.0 --port 8000

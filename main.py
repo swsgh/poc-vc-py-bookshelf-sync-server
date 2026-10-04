@@ -11,7 +11,7 @@ import jwt
 app = FastAPI(title="Bookshelf Sync Server")
 
 # --- DATABASE SETUP ---
-DB_FILE = "sync_library.db"
+DB_FILE = "bookshelf.db"
 
 def init_db():
     with sqlite3.connect(DB_FILE) as conn:

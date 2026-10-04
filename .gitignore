@@ -1,6 +1,7 @@
 # Local testing database cache structures
 *.db
 *.db-journal
+data/
 
 # Python compilation tracking folder paths
 __pycache__/

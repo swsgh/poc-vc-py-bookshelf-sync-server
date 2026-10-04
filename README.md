@@ -2,6 +2,23 @@
 
 A FastAPI service for account authentication and synchronizing book records with the Qt ISBN scanner client. SQLite is initialized automatically when the application starts.
 
+## Get the source
+
+Install Git with your distribution's package manager. For example, on Ubuntu or Debian:
+
+```sh
+sudo apt update
+sudo apt install -y git
+```
+
+Then clone and check out the server branch:
+
+```sh
+git clone https://github.com/swsgh/poc-vc-py-bookshelf-sync-server.git
+cd poc-vc-py-bookshelf-sync-server
+git checkout master
+```
+
 ## API
 
 All book routes require an `Authorization: Bearer <token>` header.
@@ -36,7 +53,33 @@ Start the development server from this directory:
 python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-The API is available at `http://127.0.0.1:8000`; interactive Swagger documentation is at `http://127.0.0.1:8000/docs`. The SQLite file `sync_library.db` is created in the process's current working directory.
+The API is available at `http://127.0.0.1:8000`; interactive Swagger documentation is at `http://127.0.0.1:8000/docs`. With Compose, `bookshelf.db` is stored in `./data` next to `compose.yaml` and persists across container recreation.
+
+## Run with Docker Compose on Linux
+
+Requires Docker Engine and the Docker Compose plugin to be installed and running.
+
+1. Verify Docker and Compose are available:
+
+```sh
+sudo docker version
+sudo docker compose version
+```
+
+2. From the cloned project directory, build and start the service:
+
+```sh
+sudo docker compose up --build -d
+```
+
+3. Follow the service logs or stop it when finished:
+
+```sh
+sudo docker compose logs -f sync-server
+sudo docker compose down
+```
+
+The API is available at `http://localhost:8000`. Compose publishes port 8000 on all host interfaces; use only on a trusted network with the current development server configuration.
 
 ## Development security
 
