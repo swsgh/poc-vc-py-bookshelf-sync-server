@@ -2,6 +2,7 @@ name: bookshelf
 
 services:
   bookshelf-sync-server:
+    container_name: bookshelf
     image: python:3.13-slim
     working_dir: /data
     init: true
