@@ -1,8 +1,7 @@
 import sqlite3
 import time
 import json
-from typing import Optional
-from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile, Form
+from fastapi import FastAPI, Depends, HTTPException, status, Form
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 import bcrypt
@@ -30,7 +29,7 @@ def init_db():
                 title TEXT NOT NULL,
                 authors TEXT,
                 engine_source TEXT,
-                cover_blob BLOB,
+                cover_url TEXT,
                 last_modified INTEGER,
                 is_deleted INTEGER DEFAULT 0,
                 PRIMARY KEY (isbn, user_id),
@@ -115,12 +114,11 @@ def login(user: UserAuth):
 # Endpoint A: Differential Sync GET (Pull updates since a local time checkpoint)
 @app.get("/api/books/sync")
 def sync_books(since: int = 0, user_id: int = Depends(get_current_user_id)):
-    import base64
     with sqlite3.connect(DB_FILE) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute(
-            """SELECT isbn, title, authors, engine_source, cover_blob, last_modified, is_deleted 
+            """SELECT isbn, title, authors, engine_source, cover_url, last_modified, is_deleted
                FROM books WHERE user_id = ? AND last_modified > ?""", 
             (user_id, since)
         )
@@ -128,11 +126,6 @@ def sync_books(since: int = 0, user_id: int = Depends(get_current_user_id)):
 
     updates = []
     for row in rows:
-        # Turn raw binary byte blobs into clean Base64 strings for structural JSON transfer safely
-        cover_base64 = ""
-        if row["cover_blob"]:
-            cover_base64 = base64.b64encode(row["cover_blob"]).decode('utf-8')
-
         updates.append({
             "isbn": row["isbn"],
             "title": row["title"],
@@ -140,7 +133,7 @@ def sync_books(since: int = 0, user_id: int = Depends(get_current_user_id)):
             "engineSource": row["engine_source"],
             "isDeleted": row["is_deleted"] == 1,
             "lastModified": row["last_modified"],
-            "coverDataBase64": cover_base64
+            "coverUrl": row["cover_url"] or ""
         })
 
     return {"serverTime": int(time.time()), "updates": updates}
@@ -149,7 +142,6 @@ def sync_books(since: int = 0, user_id: int = Depends(get_current_user_id)):
 @app.post("/api/books/upload")
 async def upload_book(
     metadata: str = Form(...), # Receives stringified JSON text block matching Qt client mapping strings
-    cover: Optional[UploadFile] = File(None), # Optional incoming binary file stream
     user_id: int = Depends(get_current_user_id)
 ):
     try:
@@ -158,6 +150,7 @@ async def upload_book(
         title = meta_data.get("title")
         authors = meta_data.get("authors", "")
         engine_source = meta_data.get("engineSource", "")
+        cover_url = meta_data.get("coverUrl", "")
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON text format inside metadata field")
 
@@ -165,15 +158,14 @@ async def upload_book(
         raise HTTPException(status_code=400, detail="Missing required identity tags: isbn or title")
 
     current_timestamp = int(time.time())
-    cover_bytes = await cover.read() if cover else None
 
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
-        # INSERT OR REPLACE keeps items synchronized. COALESCE retains existing covers if none were uploaded.
+        # Preserve an existing URL when the client has no replacement cover URL.
         cursor.execute(
-            """INSERT OR REPLACE INTO books (isbn, user_id, title, authors, engine_source, cover_blob, last_modified, is_deleted)
-               VALUES (?, ?, ?, ?, ?, COALESCE(?, (SELECT cover_blob FROM books WHERE isbn = ? AND user_id = ?)), ?, 0)""",
-            (isbn, user_id, title, authors, engine_source, cover_bytes, isbn, user_id, current_timestamp)
+            """INSERT OR REPLACE INTO books (isbn, user_id, title, authors, engine_source, cover_url, last_modified, is_deleted)
+               VALUES (?, ?, ?, ?, ?, COALESCE(NULLIF(?, ''), (SELECT cover_url FROM books WHERE isbn = ? AND user_id = ?)), ?, 0)""",
+            (isbn, user_id, title, authors, engine_source, cover_url, isbn, user_id, current_timestamp)
         )
         conn.commit()
 
@@ -185,9 +177,9 @@ def delete_book(isbn: str, user_id: int = Depends(get_current_user_id)):
     current_timestamp = int(time.time())
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
-        # Mark as deleted and clear cover storage allocations to drop server resource burdens
+        # Mark as deleted and clear the cover URL.
         cursor.execute(
-            "UPDATE books SET is_deleted = 1, last_modified = ?, cover_blob = NULL WHERE isbn = ? AND user_id = ?",
+            "UPDATE books SET is_deleted = 1, last_modified = ?, cover_url = NULL WHERE isbn = ? AND user_id = ?",
             (current_timestamp, isbn, user_id)
         )
         conn.commit()
