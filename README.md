@@ -82,6 +82,19 @@ sudo docker compose down
 
 The API is available at `http://localhost:8000`. Compose publishes port 8000 on all host interfaces; use only on a trusted network with the current development server configuration.
 
+## Update the Docker deployment
+
+From the server project directory, fetch the latest checked-out server code and base image, then recreate the service:
+
+```sh
+git pull --ff-only
+sudo docker compose pull
+sudo docker compose up -d --force-recreate
+sudo docker compose logs --tail=100 sync-server
+```
+
+The SQLite database in `./data` is preserved. Do not remove that directory when updating.
+
 ## Development security
 
 The current `JWT_SECRET` in `main.py` is a hard-coded development value. Replace it with a securely managed secret before use outside a local development environment. The development server uses plain HTTP and should not be exposed directly to the public internet.
