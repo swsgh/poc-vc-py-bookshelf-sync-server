@@ -32,7 +32,7 @@ All book routes require an `Authorization: Bearer <token>` header.
 | `POST` | `/api/books/upload` | Upload a book using multipart form fields. |
 | `DELETE` | `/api/books/delete/{isbn}` | Mark an existing book as deleted for synchronization. |
 
-For uploads, the required multipart field `metadata` contains JSON with `isbn`, `title`, and optional `authors`, `engineSource`, and `coverUrl` fields. Sync responses include `serverTime` and an `updates` list with each book's `coverUrl`. The server stores the URL, not the image data. This schema change does not migrate old BLOB databases: delete `bookshelf.db` from the project directory for local runs, or `data/bookshelf.db` for Compose, before starting the updated service.
+For uploads, the required multipart field `metadata` contains JSON with `isbn`, `title`, and optional `authors`, `engineSource`, `coverUrl`, `publicationDate`, `publisher`, and `pageCount` fields. Sync responses include `serverTime` and an `updates` list with these metadata fields. The server stores the cover URL, not the image data. The updated schema does not migrate older server databases: delete `bookshelf.db` from the project directory for local runs, or `data/bookshelf.db` for Compose, before starting the updated service.
 
 ## Run locally
 

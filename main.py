@@ -30,6 +30,9 @@ def init_db():
                 authors TEXT,
                 engine_source TEXT,
                 cover_url TEXT,
+                publication_date TEXT,
+                publisher TEXT,
+                page_count INTEGER,
                 last_modified INTEGER,
                 is_deleted INTEGER DEFAULT 0,
                 PRIMARY KEY (isbn, user_id),
@@ -118,7 +121,8 @@ def sync_books(since: int = 0, user_id: int = Depends(get_current_user_id)):
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute(
-            """SELECT isbn, title, authors, engine_source, cover_url, last_modified, is_deleted
+            """SELECT isbn, title, authors, engine_source, cover_url, publication_date,
+                      publisher, page_count, last_modified, is_deleted
                FROM books WHERE user_id = ? AND last_modified > ?""", 
             (user_id, since)
         )
@@ -133,7 +137,10 @@ def sync_books(since: int = 0, user_id: int = Depends(get_current_user_id)):
             "engineSource": row["engine_source"],
             "isDeleted": row["is_deleted"] == 1,
             "lastModified": row["last_modified"],
-            "coverUrl": row["cover_url"] or ""
+            "coverUrl": row["cover_url"] or "",
+            "publicationDate": row["publication_date"] or "",
+            "publisher": row["publisher"] or "",
+            "pageCount": row["page_count"] or 0,
         })
 
     return {"serverTime": int(time.time()), "updates": updates}
@@ -151,6 +158,15 @@ async def upload_book(
         authors = meta_data.get("authors", "")
         engine_source = meta_data.get("engineSource", "")
         cover_url = meta_data.get("coverUrl", "")
+        publication_date = meta_data.get("publicationDate") or None
+        publisher = meta_data.get("publisher") or None
+        raw_page_count = meta_data.get("pageCount")
+        try:
+            page_count = int(raw_page_count) if raw_page_count not in (None, "", 0) else None
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="pageCount must be a whole number")
+        if page_count is not None and page_count < 0:
+            raise HTTPException(status_code=400, detail="pageCount cannot be negative")
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON text format inside metadata field")
 
@@ -163,9 +179,23 @@ async def upload_book(
         cursor = conn.cursor()
         # Preserve an existing URL when the client has no replacement cover URL.
         cursor.execute(
-            """INSERT OR REPLACE INTO books (isbn, user_id, title, authors, engine_source, cover_url, last_modified, is_deleted)
-               VALUES (?, ?, ?, ?, ?, COALESCE(NULLIF(?, ''), (SELECT cover_url FROM books WHERE isbn = ? AND user_id = ?)), ?, 0)""",
-            (isbn, user_id, title, authors, engine_source, cover_url, isbn, user_id, current_timestamp)
+            """INSERT OR REPLACE INTO books (
+                   isbn, user_id, title, authors, engine_source, cover_url,
+                   publication_date, publisher, page_count, last_modified, is_deleted
+               ) VALUES (
+                   ?, ?, ?, ?, ?,
+                   COALESCE(NULLIF(?, ''), (SELECT cover_url FROM books WHERE isbn = ? AND user_id = ?)),
+                   COALESCE(?, (SELECT publication_date FROM books WHERE isbn = ? AND user_id = ?)),
+                   COALESCE(?, (SELECT publisher FROM books WHERE isbn = ? AND user_id = ?)),
+                   COALESCE(?, (SELECT page_count FROM books WHERE isbn = ? AND user_id = ?)),
+                   ?, 0
+               )""",
+            (isbn, user_id, title, authors, engine_source,
+             cover_url, isbn, user_id,
+             publication_date, isbn, user_id,
+             publisher, isbn, user_id,
+             page_count, isbn, user_id,
+             current_timestamp)
         )
         conn.commit()
 
@@ -179,7 +209,9 @@ def delete_book(isbn: str, user_id: int = Depends(get_current_user_id)):
         cursor = conn.cursor()
         # Mark as deleted and clear the cover URL.
         cursor.execute(
-            "UPDATE books SET is_deleted = 1, last_modified = ?, cover_url = NULL WHERE isbn = ? AND user_id = ?",
+            "UPDATE books SET is_deleted = 1, last_modified = ?, cover_url = NULL, "
+            "publication_date = NULL, publisher = NULL, page_count = NULL "
+            "WHERE isbn = ? AND user_id = ?",
             (current_timestamp, isbn, user_id)
         )
         conn.commit()
