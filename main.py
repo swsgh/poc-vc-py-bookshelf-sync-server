@@ -41,6 +41,10 @@ def init_db():
 
 init_db()
 
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
+
 # --- SECURITY CONFIGURATION ---
 JWT_SECRET = "super_secret_key_change_this_in_production"
 # (REMOVED: pwd_context = CryptContext(...) line completely)

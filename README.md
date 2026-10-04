@@ -25,6 +25,7 @@ All book routes require an `Authorization: Bearer <token>` header.
 
 | Method | Route | Purpose |
 | --- | --- | --- |
+| `GET` | `/health` | Check that the sync server is reachable. |
 | `POST` | `/api/auth/register` | Create an account. JSON body: `username`, `password`. |
 | `POST` | `/api/auth/login` | Authenticate and receive a JWT. JSON body: `username`, `password`. |
 | `GET` | `/api/books/sync?since=<unix-seconds>` | Fetch the authenticated user's updates after the checkpoint. |
