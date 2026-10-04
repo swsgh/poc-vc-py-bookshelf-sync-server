@@ -76,7 +76,7 @@ sudo docker compose up --build -d
 3. Follow the service logs or stop it when finished:
 
 ```sh
-sudo docker compose logs -f sync-server
+sudo docker compose logs -f bookshelf-sync-server
 sudo docker compose down
 ```
 
@@ -90,7 +90,7 @@ From the server project directory, fetch the latest checked-out server code and 
 git pull --ff-only
 sudo docker compose pull
 sudo docker compose up -d --force-recreate
-sudo docker compose logs --tail=100 sync-server
+sudo docker compose logs --tail=100 bookshelf-sync-server
 ```
 
 The SQLite database in `./data` is preserved. Do not remove that directory when updating.

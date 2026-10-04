@@ -1,7 +1,7 @@
 name: bookshelf
 
 services:
-  sync-server:
+  bookshelf-sync-server:
     image: python:3.13-slim
     working_dir: /data
     init: true
