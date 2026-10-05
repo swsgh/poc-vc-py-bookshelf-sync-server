@@ -1,6 +1,6 @@
 # Bookshelf Sync Server
 
-A FastAPI service for account authentication and synchronizing book records with the Qt ISBN scanner client. SQLite is initialized automatically when the application starts.
+A FastAPI service for account authentication and synchronizing book records between the Qt and Python ISBN scanner clients. SQLite is initialized automatically when the application starts.
 
 ## Get the source
 
@@ -46,11 +46,11 @@ Uploads use the required multipart field `metadata`, containing JSON with:
 | `publisher` | Optional |
 | `pageCount` | Optional |
 
-Sync responses include `serverTime` and an `updates` list containing these metadata fields.
+Sync responses contain `serverTime` and an `updates` list. Each update includes `isbn`, `title`, `authors`, `coverUrl`, `publicationDate`, `publisher`, `pageCount`, `isDeleted`, and `lastModified`. Deleted books are sent as tombstones so clients can remove them from their local shelves. The server stores cover URLs only; clients download and cache the image files themselves.
 
 ### Database compatibility
 
-The updated schema does not migrate older server databases. Before starting the updated service, remove the old database:
+The current version expects a fresh database and does not migrate older server databases. Remove the old database before starting the updated service:
 
 - Local run: `bookshelf.db` in the project directory.
 - Docker Compose: `data/bookshelf.db`.
