@@ -5,7 +5,7 @@ import os
 import sqlite3
 import time
 from pathlib import Path
-from fastapi import FastAPI, Depends, HTTPException, Form, Request
+from fastapi import FastAPI, Depends, HTTPException, Form
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
@@ -36,7 +36,6 @@ def init_db():
                 user_id INTEGER,
                 title TEXT NOT NULL,
                 authors TEXT,
-                cover_url TEXT,
                 publication_date TEXT,
                 publisher TEXT,
                 page_count INTEGER,
@@ -222,15 +221,15 @@ def _cached_book(isbn):
         ).fetchone()
 
 
-def _save_user_book(metadata, cover_url, user_id):
+def _save_user_book(metadata, user_id):
     current_timestamp = int(time.time())
     with sqlite3.connect(DB_FILE) as conn:
         conn.execute(
             """INSERT OR REPLACE INTO books (
-                   isbn, user_id, title, authors, cover_url, publication_date,
+                   isbn, user_id, title, authors, publication_date,
                    publisher, page_count, last_modified, is_deleted
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)""",
-            (metadata["isbn"], user_id, metadata["title"], metadata["authors"], cover_url,
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)""",
+            (metadata["isbn"], user_id, metadata["title"], metadata["authors"],
              metadata["publicationDate"], metadata["publisher"], metadata["pageCount"],
              current_timestamp),
         )
@@ -337,8 +336,7 @@ def login(user: UserAuth):
 
 
 @app.post("/api/books/lookup")
-def lookup_book(book: IsbnLookup, request: Request,
-                user_id: int = Depends(get_current_user_id)):
+def lookup_book(book: IsbnLookup, user_id: int = Depends(get_current_user_id)):
     isbn = book.isbn.strip().replace("-", "")
     if not isbn.isdigit() or len(isbn) not in (10, 13):
         raise HTTPException(status_code=400, detail="ISBN must contain 10 or 13 digits.")
@@ -346,16 +344,20 @@ def lookup_book(book: IsbnLookup, request: Request,
     with sqlite3.connect(DB_FILE) as conn:
         conn.row_factory = sqlite3.Row
         existing = conn.execute(
-            """SELECT title, authors, cover_url, publication_date, publisher, page_count
+            """SELECT title, authors, publication_date, publisher, page_count
                FROM books WHERE isbn = ? AND user_id = ? AND is_deleted = 0""",
             (isbn, user_id),
         ).fetchone()
     if existing:
+        cached = _cached_book(isbn)
         return {
             "isbn": isbn,
             "title": existing["title"],
             "authors": existing["authors"] or "",
-            "coverUrl": existing["cover_url"] or "",
+            "hasCover": bool(
+                cached and cached["cover_file"]
+                and _cover_file_path(cached["cover_file"]).is_file()
+            ),
             "publicationDate": existing["publication_date"] or "",
             "publisher": existing["publisher"] or "",
             "pageCount": existing["page_count"] or 0,
@@ -363,18 +365,22 @@ def lookup_book(book: IsbnLookup, request: Request,
         }
 
     metadata, cover_file, warnings = _lookup_book(isbn)
-    cover_url = (
-        str(request.base_url).rstrip("/") + f"/api/books/cover/{isbn}"
-        if cover_file else ""
-    )
-    _save_user_book(metadata, cover_url, user_id)
-    metadata["coverUrl"] = cover_url
+    _save_user_book(metadata, user_id)
+    metadata["hasCover"] = bool(cover_file)
     metadata["warnings"] = warnings
     return metadata
 
 
 @app.get("/api/books/cover/{isbn}")
-def get_book_cover(isbn: str):
+def get_book_cover(isbn: str, user_id: int = Depends(get_current_user_id)):
+    with sqlite3.connect(DB_FILE) as conn:
+        owned_book = conn.execute(
+            "SELECT 1 FROM books WHERE isbn = ? AND user_id = ? AND is_deleted = 0",
+            (isbn, user_id),
+        ).fetchone()
+    if not owned_book:
+        raise HTTPException(status_code=404, detail="Book is not on this user's shelf.")
+
     cached = _cached_book(isbn)
     if not cached or not cached["cover_file"]:
         raise HTTPException(status_code=404, detail="No cached cover image for this ISBN.")
@@ -384,7 +390,7 @@ def get_book_cover(isbn: str):
     return FileResponse(
         image_path,
         media_type=cached["cover_content_type"] or "image/jpeg",
-        headers={"Cache-Control": "public, max-age=86400"},
+        headers={"Cache-Control": "private, max-age=86400"},
     )
 
 # =================================================================
@@ -398,9 +404,12 @@ def sync_books(since: int = 0, user_id: int = Depends(get_current_user_id)):
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute(
-            """SELECT isbn, title, authors, cover_url, publication_date,
-                      publisher, page_count, last_modified, is_deleted
-               FROM books WHERE user_id = ? AND last_modified > ?""", 
+             """SELECT b.isbn, b.title, b.authors, b.publication_date,
+                 b.publisher, b.page_count, b.last_modified, b.is_deleted,
+                 c.cover_file
+             FROM books AS b
+             LEFT JOIN book_metadata_cache AS c ON c.isbn = b.isbn
+             WHERE b.user_id = ? AND b.last_modified > ?""",
             (user_id, since)
         )
         rows = cursor.fetchall()
@@ -413,7 +422,9 @@ def sync_books(since: int = 0, user_id: int = Depends(get_current_user_id)):
             "authors": row["authors"],
             "isDeleted": row["is_deleted"] == 1,
             "lastModified": row["last_modified"],
-            "coverUrl": row["cover_url"] or "",
+            "hasCover": bool(
+                row["cover_file"] and _cover_file_path(row["cover_file"]).is_file()
+            ),
             "publicationDate": row["publication_date"] or "",
             "publisher": row["publisher"] or "",
             "pageCount": row["page_count"] or 0,
@@ -432,7 +443,6 @@ async def upload_book(
         isbn = meta_data.get("isbn")
         title = meta_data.get("title")
         authors = meta_data.get("authors", "")
-        cover_url = meta_data.get("coverUrl", "")
         publication_date = meta_data.get("publicationDate") or None
         publisher = meta_data.get("publisher") or None
         raw_page_count = meta_data.get("pageCount")
@@ -452,21 +462,18 @@ async def upload_book(
 
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
-        # Preserve an existing URL when the client has no replacement cover URL.
         cursor.execute(
             """INSERT OR REPLACE INTO books (
-                   isbn, user_id, title, authors, cover_url,
+                   isbn, user_id, title, authors,
                    publication_date, publisher, page_count, last_modified, is_deleted
                ) VALUES (
                    ?, ?, ?, ?,
-                   COALESCE(NULLIF(?, ''), (SELECT cover_url FROM books WHERE isbn = ? AND user_id = ?)),
                    COALESCE(?, (SELECT publication_date FROM books WHERE isbn = ? AND user_id = ?)),
                    COALESCE(?, (SELECT publisher FROM books WHERE isbn = ? AND user_id = ?)),
                    COALESCE(?, (SELECT page_count FROM books WHERE isbn = ? AND user_id = ?)),
                    ?, 0
                )""",
             (isbn, user_id, title, authors,
-             cover_url, isbn, user_id,
              publication_date, isbn, user_id,
              publisher, isbn, user_id,
              page_count, isbn, user_id,
@@ -482,9 +489,9 @@ def delete_book(isbn: str, user_id: int = Depends(get_current_user_id)):
     current_timestamp = int(time.time())
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
-        # Mark as deleted and clear the cover URL.
+        # Mark as deleted and clear optional metadata.
         cursor.execute(
-            "UPDATE books SET is_deleted = 1, last_modified = ?, cover_url = NULL, "
+            "UPDATE books SET is_deleted = 1, last_modified = ?, "
             "publication_date = NULL, publisher = NULL, page_count = NULL "
             "WHERE isbn = ? AND user_id = ?",
             (current_timestamp, isbn, user_id)

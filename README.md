@@ -21,7 +21,7 @@ git checkout master
 
 ## API
 
-Lookup and bookshelf routes require an `Authorization: Bearer <token>` header. The read-only cached-cover route is public. Authentication endpoints accept JSON request bodies.
+Lookup, bookshelf, and cached-cover routes require an `Authorization: Bearer <token>` header. Cover access is limited to ISBNs on the authenticated user's shelf. Authentication endpoints accept JSON request bodies.
 
 | Method | Route | Purpose |
 | --- | --- | --- |
@@ -29,7 +29,7 @@ Lookup and bookshelf routes require an `Authorization: Bearer <token>` header. T
 | `POST` | `/api/auth/register` | Create an account. JSON body: `username`, `password`. |
 | `POST` | `/api/auth/login` | Authenticate and receive a JWT. JSON body: `username`, `password`. |
 | `POST` | `/api/books/lookup` | Resolve an ISBN, cache its cover, add the book to the signed-in user's shelf, and return metadata. JSON body: `isbn`. |
-| `GET` | `/api/books/cover/{isbn}` | Serve the cached cover image for an ISBN. |
+| `GET` | `/api/books/cover/{isbn}` | Serve the cached cover image for an ISBN on the authenticated user's shelf. |
 | `GET` | `/api/books/sync?since=<unix-seconds>` | Fetch the authenticated user's updates after the checkpoint. |
 | `POST` | `/api/books/upload` | Upload a book using multipart form fields. |
 | `DELETE` | `/api/books/delete/{isbn}` | Mark an existing book as deleted for synchronization. |
@@ -43,14 +43,13 @@ Uploads use the required multipart field `metadata`, containing JSON with:
 | `isbn` | Required |
 | `title` | Required |
 | `authors` | Optional |
-| `coverUrl` | Optional; the server stores the URL, not image data |
 | `publicationDate` | Optional |
 | `publisher` | Optional |
 | `pageCount` | Optional |
 
-ISBN lookup checks the server's metadata cache, queries Open Library, then falls back to Google Books when needed. Cover files are cached under the persistent data directory. The authenticated lookup stores the scanned book on the user's server shelf and returns metadata with a server-hosted `coverUrl`; each client downloads and caches that cover locally. Provider warnings may be returned in the optional `warnings` list.
+ISBN lookup checks the server's metadata cache, queries Open Library, then falls back to Google Books when needed. Cover files are cached under the persistent data directory. The authenticated lookup stores the scanned book on the user's server shelf and returns metadata with a `hasCover` flag. Clients fetch available covers from the authenticated cover route and cache image bytes locally. Provider warnings may be returned in the optional `warnings` list.
 
-Sync responses contain `serverTime` and an `updates` list. Each update includes `isbn`, `title`, `authors`, `coverUrl`, `publicationDate`, `publisher`, `pageCount`, `isDeleted`, and `lastModified`. Deleted books are sent as tombstones so clients can remove them from their local shelves.
+Sync responses contain `serverTime` and an `updates` list. Each update includes `isbn`, `title`, `authors`, `hasCover`, `publicationDate`, `publisher`, `pageCount`, `isDeleted`, and `lastModified`. Cover image bytes and URLs are not part of the sync payload. Deleted books are sent as tombstones so clients can remove them from their local shelves.
 
 ### Database compatibility
 
