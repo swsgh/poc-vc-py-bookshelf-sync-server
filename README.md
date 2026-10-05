@@ -41,7 +41,6 @@ Uploads use the required multipart field `metadata`, containing JSON with:
 | `isbn` | Required |
 | `title` | Required |
 | `authors` | Optional |
-| `engineSource` | Optional |
 | `coverUrl` | Optional; the server stores the URL, not image data |
 | `publicationDate` | Optional |
 | `publisher` | Optional |
@@ -51,7 +50,7 @@ Sync responses include `serverTime` and an `updates` list containing these metad
 
 ### Database compatibility
 
-The updated schema does not migrate older server databases. Before starting the updated service, remove the old database:
+The updated schema omits the `engine_source` column and does not migrate older server databases. Before starting the updated service, remove the old database:
 
 - Local run: `bookshelf.db` in the project directory.
 - Docker Compose: `data/bookshelf.db`.

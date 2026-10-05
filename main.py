@@ -28,7 +28,6 @@ def init_db():
                 user_id INTEGER,
                 title TEXT NOT NULL,
                 authors TEXT,
-                engine_source TEXT,
                 cover_url TEXT,
                 publication_date TEXT,
                 publisher TEXT,
@@ -121,7 +120,7 @@ def sync_books(since: int = 0, user_id: int = Depends(get_current_user_id)):
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute(
-            """SELECT isbn, title, authors, engine_source, cover_url, publication_date,
+            """SELECT isbn, title, authors, cover_url, publication_date,
                       publisher, page_count, last_modified, is_deleted
                FROM books WHERE user_id = ? AND last_modified > ?""", 
             (user_id, since)
@@ -134,7 +133,6 @@ def sync_books(since: int = 0, user_id: int = Depends(get_current_user_id)):
             "isbn": row["isbn"],
             "title": row["title"],
             "authors": row["authors"],
-            "engineSource": row["engine_source"],
             "isDeleted": row["is_deleted"] == 1,
             "lastModified": row["last_modified"],
             "coverUrl": row["cover_url"] or "",
@@ -156,7 +154,6 @@ async def upload_book(
         isbn = meta_data.get("isbn")
         title = meta_data.get("title")
         authors = meta_data.get("authors", "")
-        engine_source = meta_data.get("engineSource", "")
         cover_url = meta_data.get("coverUrl", "")
         publication_date = meta_data.get("publicationDate") or None
         publisher = meta_data.get("publisher") or None
@@ -180,17 +177,17 @@ async def upload_book(
         # Preserve an existing URL when the client has no replacement cover URL.
         cursor.execute(
             """INSERT OR REPLACE INTO books (
-                   isbn, user_id, title, authors, engine_source, cover_url,
+                   isbn, user_id, title, authors, cover_url,
                    publication_date, publisher, page_count, last_modified, is_deleted
                ) VALUES (
-                   ?, ?, ?, ?, ?,
+                   ?, ?, ?, ?,
                    COALESCE(NULLIF(?, ''), (SELECT cover_url FROM books WHERE isbn = ? AND user_id = ?)),
                    COALESCE(?, (SELECT publication_date FROM books WHERE isbn = ? AND user_id = ?)),
                    COALESCE(?, (SELECT publisher FROM books WHERE isbn = ? AND user_id = ?)),
                    COALESCE(?, (SELECT page_count FROM books WHERE isbn = ? AND user_id = ?)),
                    ?, 0
                )""",
-            (isbn, user_id, title, authors, engine_source,
+            (isbn, user_id, title, authors,
              cover_url, isbn, user_id,
              publication_date, isbn, user_id,
              publisher, isbn, user_id,
