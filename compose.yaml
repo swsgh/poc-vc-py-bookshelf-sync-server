@@ -13,6 +13,9 @@ services:
       PYTHONPATH: /app
       PYTHONUNBUFFERED: "1"
       PYTHONDONTWRITEBYTECODE: "1"
+      OPEN_LIBRARY_CONTACT_EMAIL: ${OPEN_LIBRARY_CONTACT_EMAIL:?Set OPEN_LIBRARY_CONTACT_EMAIL in .env}
+      GOOGLE_BOOKS_API_KEY: ${GOOGLE_BOOKS_API_KEY:?Set GOOGLE_BOOKS_API_KEY in .env}
+      BOOK_COVER_CACHE_DIR: /data/covers
     volumes:
       - .:/app:ro
       - ./data:/data

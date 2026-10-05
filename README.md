@@ -21,13 +21,15 @@ git checkout master
 
 ## API
 
-All book routes require an `Authorization: Bearer <token>` header. Authentication endpoints accept JSON request bodies.
+Lookup and bookshelf routes require an `Authorization: Bearer <token>` header. The read-only cached-cover route is public. Authentication endpoints accept JSON request bodies.
 
 | Method | Route | Purpose |
 | --- | --- | --- |
 | `GET` | `/health` | Check that the sync server is reachable. |
 | `POST` | `/api/auth/register` | Create an account. JSON body: `username`, `password`. |
 | `POST` | `/api/auth/login` | Authenticate and receive a JWT. JSON body: `username`, `password`. |
+| `POST` | `/api/books/lookup` | Resolve an ISBN, cache its cover, add the book to the signed-in user's shelf, and return metadata. JSON body: `isbn`. |
+| `GET` | `/api/books/cover/{isbn}` | Serve the cached cover image for an ISBN. |
 | `GET` | `/api/books/sync?since=<unix-seconds>` | Fetch the authenticated user's updates after the checkpoint. |
 | `POST` | `/api/books/upload` | Upload a book using multipart form fields. |
 | `DELETE` | `/api/books/delete/{isbn}` | Mark an existing book as deleted for synchronization. |
@@ -46,7 +48,9 @@ Uploads use the required multipart field `metadata`, containing JSON with:
 | `publisher` | Optional |
 | `pageCount` | Optional |
 
-Sync responses contain `serverTime` and an `updates` list. Each update includes `isbn`, `title`, `authors`, `coverUrl`, `publicationDate`, `publisher`, `pageCount`, `isDeleted`, and `lastModified`. Deleted books are sent as tombstones so clients can remove them from their local shelves. The server stores cover URLs only; clients download and cache the image files themselves.
+ISBN lookup checks the server's metadata cache, queries Open Library, then falls back to Google Books when needed. Cover files are cached under the persistent data directory. The authenticated lookup stores the scanned book on the user's server shelf and returns metadata with a server-hosted `coverUrl`; each client downloads and caches that cover locally. Provider warnings may be returned in the optional `warnings` list.
+
+Sync responses contain `serverTime` and an `updates` list. Each update includes `isbn`, `title`, `authors`, `coverUrl`, `publicationDate`, `publisher`, `pageCount`, `isDeleted`, and `lastModified`. Deleted books are sent as tombstones so clients can remove them from their local shelves.
 
 ### Database compatibility
 
@@ -69,6 +73,8 @@ Activate the environment, then install dependencies:
 python -m pip install -r requirements.txt
 ```
 
+Set `OPEN_LIBRARY_CONTACT_EMAIL` and `GOOGLE_BOOKS_API_KEY` in the server environment before starting it. These provider credentials are used only by the server, never by scanner clients.
+
 Start the development server from this directory:
 
 ```sh
@@ -82,6 +88,15 @@ With Compose, `bookshelf.db` is stored in `./data` next to `compose.yaml` and pe
 ## Run with Docker Compose on Linux
 
 Requires Docker Engine and the Docker Compose plugin to be installed and running.
+
+Create a `.env` file next to `compose.yaml` with these settings:
+
+```dotenv
+OPEN_LIBRARY_CONTACT_EMAIL=you@example.org
+GOOGLE_BOOKS_API_KEY=replace-with-your-google-books-key
+```
+
+Compose passes these values only to the server. The existing `./data` volume stores both the SQLite database and cached cover files.
 
 1. Verify Docker and Compose are available:
 

@@ -1,16 +1,24 @@
+import json
+import hashlib
+import logging
+import os
 import sqlite3
 import time
-import json
-from fastapi import FastAPI, Depends, HTTPException, status, Form
+from pathlib import Path
+from fastapi import FastAPI, Depends, HTTPException, Form, Request
+from fastapi.responses import FileResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 import bcrypt
 import jwt
+import requests
 
 app = FastAPI(title="Bookshelf Sync Server")
 
 # --- DATABASE SETUP ---
 DB_FILE = "bookshelf.db"
+COVER_CACHE_DIR = Path(os.environ.get("BOOK_COVER_CACHE_DIR", "covers"))
+logger = logging.getLogger("bookshelf.metadata")
 
 def init_db():
     with sqlite3.connect(DB_FILE) as conn:
@@ -38,6 +46,18 @@ def init_db():
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )
         """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS book_metadata_cache (
+                isbn TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                authors TEXT,
+                cover_file TEXT,
+                cover_content_type TEXT,
+                publication_date TEXT,
+                publisher TEXT,
+                page_count INTEGER
+            )
+        """)
         conn.commit()
 
 init_db()
@@ -55,6 +75,212 @@ security = HTTPBearer()
 class UserAuth(BaseModel):
     username: str
     password: str
+
+
+class IsbnLookup(BaseModel):
+    isbn: str
+
+
+def _provider_user_agent():
+    contact = os.environ.get("OPEN_LIBRARY_CONTACT_EMAIL", "").strip()
+    return f"BookshelfSyncServer/1.0 ({contact})" if contact else "BookshelfSyncServer/1.0"
+
+
+def _open_library_lookup(isbn):
+    try:
+        response = requests.get(
+            "https://openlibrary.org/api/books",
+            params={"bibkeys": f"ISBN:{isbn}", "format": "json", "jscmd": "data"},
+            headers={"User-Agent": _provider_user_agent()},
+            timeout=(4, 12),
+        )
+        if response.status_code != 200:
+            if response.status_code == 404:
+                return None, [], ""
+            return None, [], f"Open Library request failed (HTTP {response.status_code})."
+        info = response.json().get(f"ISBN:{isbn}")
+        if not info:
+            return None, [], ""
+
+        cover = info.get("cover", {})
+        cover_urls = [cover.get(size) for size in ("large", "medium", "small")]
+        authors = ", ".join(
+            author.get("name", "Unknown") for author in info.get("authors", [])
+        ) or info.get("by_statement", "Unknown Author")
+        publishers = info.get("publishers", [])
+        publisher = publishers[0] if publishers else ""
+        if isinstance(publisher, dict):
+            publisher = publisher.get("name", "")
+
+        metadata = {
+            "isbn": isbn,
+            "title": info.get("title", "Unknown Title"),
+            "authors": authors,
+            "publicationDate": info.get("publish_date", "") or "",
+            "publisher": str(publisher),
+            "pageCount": int(info.get("number_of_pages") or 0),
+        }
+        return metadata, cover_urls, ""
+    except requests.Timeout:
+        return None, [], "Open Library request timed out."
+    except requests.RequestException as error:
+        return None, [], f"Open Library network request failed: {error}"
+    except (ValueError, TypeError) as error:
+        return None, [], f"Open Library returned invalid data: {error}"
+
+
+def _google_books_lookup(isbn):
+    api_key = os.environ.get("GOOGLE_BOOKS_API_KEY", "").strip()
+    if not api_key:
+        return None, [], "Google Books API key is not configured on the server."
+    try:
+        response = requests.get(
+            "https://www.googleapis.com/books/v1/volumes",
+            params={"q": f"isbn:{isbn}", "key": api_key},
+            headers={"User-Agent": _provider_user_agent()},
+            timeout=(4, 12),
+        )
+        if response.status_code != 200:
+            if response.status_code == 429:
+                return None, [], "Google Books rate limit reached (HTTP 429)."
+            return None, [], f"Google Books request failed (HTTP {response.status_code})."
+        items = response.json().get("items", [])
+        if not items:
+            return None, [], ""
+
+        volume = items[0].get("volumeInfo", {})
+        image_links = volume.get("imageLinks", {})
+        cover_urls = [
+            image_links.get(size)
+            for size in ("extraLarge", "large", "medium", "thumbnail", "small", "smallThumbnail")
+        ]
+        cover_urls = [
+            url.replace("http://", "https://", 1) if url and url.startswith("http://") else url
+            for url in cover_urls
+        ]
+        metadata = {
+            "isbn": isbn,
+            "title": volume.get("title", "Unknown Title"),
+            "authors": ", ".join(volume.get("authors", [])) or "Unknown Author",
+            "publicationDate": volume.get("publishedDate", "") or "",
+            "publisher": volume.get("publisher", "") or "",
+            "pageCount": int(volume.get("pageCount") or 0),
+        }
+        return metadata, cover_urls, ""
+    except requests.Timeout:
+        return None, [], "Google Books request timed out."
+    except requests.RequestException as error:
+        return None, [], f"Google Books network request failed: {error}"
+    except (ValueError, TypeError) as error:
+        return None, [], f"Google Books returned invalid data: {error}"
+
+
+def _cover_file_path(filename):
+    return COVER_CACHE_DIR / filename
+
+
+def _cache_cover(isbn, cover_urls):
+    COVER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    filename = hashlib.sha256(isbn.encode("utf-8")).hexdigest() + ".img"
+    destination = _cover_file_path(filename)
+    errors = []
+    for url in cover_urls:
+        if not url:
+            continue
+        try:
+            response = requests.get(
+                url,
+                headers={"User-Agent": _provider_user_agent()},
+                timeout=(4, 15),
+            )
+            if response.status_code != 200:
+                errors.append(f"Cover request failed (HTTP {response.status_code}).")
+                continue
+            if not response.content or not response.headers.get("content-type", "").startswith("image/"):
+                errors.append("Cover response was empty or not an image.")
+                continue
+            temporary = destination.with_suffix(".tmp")
+            temporary.write_bytes(response.content)
+            temporary.replace(destination)
+            return filename, response.headers.get("content-type", "image/jpeg"), errors
+        except requests.Timeout:
+            errors.append("Cover image request timed out.")
+        except requests.RequestException as error:
+            errors.append(f"Cover image request failed: {error}")
+        except OSError as error:
+            errors.append(f"Could not cache cover image: {error}")
+    return "", "", errors
+
+
+def _cached_book(isbn):
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            "SELECT isbn, title, authors, cover_file, cover_content_type, "
+            "publication_date, publisher, page_count FROM book_metadata_cache WHERE isbn = ?",
+            (isbn,),
+        ).fetchone()
+
+
+def _save_user_book(metadata, cover_url, user_id):
+    current_timestamp = int(time.time())
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO books (
+                   isbn, user_id, title, authors, cover_url, publication_date,
+                   publisher, page_count, last_modified, is_deleted
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)""",
+            (metadata["isbn"], user_id, metadata["title"], metadata["authors"], cover_url,
+             metadata["publicationDate"], metadata["publisher"], metadata["pageCount"],
+             current_timestamp),
+        )
+        conn.commit()
+
+
+def _lookup_book(isbn):
+    cached = _cached_book(isbn)
+    if cached and (not cached["cover_file"] or _cover_file_path(cached["cover_file"]).is_file()):
+        metadata = {
+            "isbn": cached["isbn"], "title": cached["title"], "authors": cached["authors"] or "",
+            "publicationDate": cached["publication_date"] or "", "publisher": cached["publisher"] or "",
+            "pageCount": cached["page_count"] or 0,
+        }
+        cover_file = cached["cover_file"] or ""
+        return metadata, cover_file, []
+
+    metadata, cover_urls, error = _open_library_lookup(isbn)
+    warnings = [error] if error else []
+    if not metadata:
+        google_metadata, google_urls, error = _google_books_lookup(isbn)
+        if error:
+            warnings.append(error)
+        if google_metadata:
+            metadata, cover_urls = google_metadata, google_urls
+    elif not cover_urls:
+        google_metadata, google_urls, error = _google_books_lookup(isbn)
+        if error:
+            warnings.append(error)
+        if google_metadata and google_urls:
+            cover_urls = google_urls
+
+    if not metadata:
+        if warnings:
+            raise HTTPException(status_code=502, detail=" ".join(warnings))
+        raise HTTPException(status_code=404, detail=f"No book metadata found for ISBN {isbn}.")
+
+    cover_file, content_type, cover_errors = _cache_cover(isbn, cover_urls)
+    warnings.extend(cover_errors)
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO book_metadata_cache (
+                   isbn, title, authors, cover_file, cover_content_type,
+                   publication_date, publisher, page_count
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (isbn, metadata["title"], metadata["authors"], cover_file, content_type,
+             metadata["publicationDate"], metadata["publisher"], metadata["pageCount"]),
+        )
+        conn.commit()
+    return metadata, cover_file, warnings
 
 def get_current_user_id(credentials: HTTPAuthorizationCredentials = Depends(security)) -> int:
     token = credentials.credentials
@@ -108,6 +334,39 @@ def login(user: UserAuth):
     expires = int(time.time()) + (30 * 24 * 60 * 60)
     token = jwt.encode({"id": db_user["id"], "exp": expires}, JWT_SECRET, algorithm=ALGORITHM)
     return {"token": token}
+
+
+@app.post("/api/books/lookup")
+def lookup_book(book: IsbnLookup, request: Request,
+                user_id: int = Depends(get_current_user_id)):
+    isbn = book.isbn.strip().replace("-", "")
+    if not isbn.isdigit() or len(isbn) not in (10, 13):
+        raise HTTPException(status_code=400, detail="ISBN must contain 10 or 13 digits.")
+
+    metadata, cover_file, warnings = _lookup_book(isbn)
+    cover_url = (
+        str(request.base_url).rstrip("/") + f"/api/books/cover/{isbn}"
+        if cover_file else ""
+    )
+    _save_user_book(metadata, cover_url, user_id)
+    metadata["coverUrl"] = cover_url
+    metadata["warnings"] = warnings
+    return metadata
+
+
+@app.get("/api/books/cover/{isbn}")
+def get_book_cover(isbn: str):
+    cached = _cached_book(isbn)
+    if not cached or not cached["cover_file"]:
+        raise HTTPException(status_code=404, detail="No cached cover image for this ISBN.")
+    image_path = _cover_file_path(cached["cover_file"])
+    if not image_path.is_file():
+        raise HTTPException(status_code=404, detail="Cached cover image is missing.")
+    return FileResponse(
+        image_path,
+        media_type=cached["cover_content_type"] or "image/jpeg",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 # =================================================================
 # 2. BOOKSHELF GRID SYNCING ENDPOINTS
