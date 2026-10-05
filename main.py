@@ -302,9 +302,11 @@ def _save_user_book(metadata, user_id):
         conn.commit()
 
 
-def _lookup_book(isbn):
+def _lookup_book(isbn, force_refresh=False):
     cached = _cached_book(isbn)
-    if cached and (not cached["cover_file"] or _cover_file_path(cached["cover_file"]).is_file()):
+    if not force_refresh and cached and (
+        not cached["cover_file"] or _cover_file_path(cached["cover_file"]).is_file()
+    ):
         metadata = {
             "isbn": cached["isbn"], "title": cached["title"], "authors": cached["authors"] or "",
             "publicationDate": cached["publication_date"] or "", "publisher": cached["publisher"] or "",
@@ -417,11 +419,11 @@ def lookup_book(book: IsbnLookup, user_id: int = Depends(get_current_user_id)):
     with sqlite3.connect(DB_FILE) as conn:
         conn.row_factory = sqlite3.Row
         existing = conn.execute(
-            """SELECT title, authors, publication_date, publisher, page_count
-               FROM books WHERE isbn = ? AND user_id = ? AND is_deleted = 0""",
+            """SELECT title, authors, publication_date, publisher, page_count, is_deleted
+               FROM books WHERE isbn = ? AND user_id = ?""",
             (isbn, user_id),
         ).fetchone()
-    if existing:
+    if existing and not existing["is_deleted"]:
         cached = _cached_book(isbn)
         return {
             "isbn": isbn,
@@ -437,7 +439,9 @@ def lookup_book(book: IsbnLookup, user_id: int = Depends(get_current_user_id)):
             "warnings": [],
         }
 
-    metadata, cover_file, warnings = _lookup_book(isbn)
+    metadata, cover_file, warnings = _lookup_book(
+        isbn, force_refresh=bool(existing and existing["is_deleted"])
+    )
     _save_user_book(metadata, user_id)
     metadata["hasCover"] = bool(cover_file)
     metadata["warnings"] = warnings
