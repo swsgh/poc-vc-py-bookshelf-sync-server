@@ -343,6 +343,25 @@ def lookup_book(book: IsbnLookup, request: Request,
     if not isbn.isdigit() or len(isbn) not in (10, 13):
         raise HTTPException(status_code=400, detail="ISBN must contain 10 or 13 digits.")
 
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.row_factory = sqlite3.Row
+        existing = conn.execute(
+            """SELECT title, authors, cover_url, publication_date, publisher, page_count
+               FROM books WHERE isbn = ? AND user_id = ? AND is_deleted = 0""",
+            (isbn, user_id),
+        ).fetchone()
+    if existing:
+        return {
+            "isbn": isbn,
+            "title": existing["title"],
+            "authors": existing["authors"] or "",
+            "coverUrl": existing["cover_url"] or "",
+            "publicationDate": existing["publication_date"] or "",
+            "publisher": existing["publisher"] or "",
+            "pageCount": existing["page_count"] or 0,
+            "warnings": [],
+        }
+
     metadata, cover_file, warnings = _lookup_book(isbn)
     cover_url = (
         str(request.base_url).rstrip("/") + f"/api/books/cover/{isbn}"
