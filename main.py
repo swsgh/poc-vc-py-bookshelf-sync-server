@@ -2,8 +2,10 @@ import json
 import hashlib
 import logging
 import os
+import re
 import sqlite3
 import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from fastapi import FastAPI, Depends, HTTPException, Form
 from fastapi.responses import FileResponse
@@ -174,6 +176,70 @@ def _google_books_lookup(isbn):
         return None, [], f"Google Books returned invalid data: {error}"
 
 
+def _dnb_lookup(isbn):
+    try:
+        response = requests.get(
+            "https://services.dnb.de/sru/dnb",
+            params={
+                "version": "1.1",
+                "operation": "searchRetrieve",
+                "query": f"num={isbn}",
+                "maximumRecords": 1,
+                "recordSchema": "oai_dc",
+            },
+            headers={"User-Agent": _provider_user_agent()},
+            timeout=(4, 12),
+        )
+        if response.status_code != 200:
+            return None, [], f"DNB request failed (HTTP {response.status_code})."
+
+        document = ET.fromstring(response.content)
+        namespaces = {
+            "sru": "http://www.loc.gov/zing/srw/",
+            "dc": "http://purl.org/dc/elements/1.1/",
+        }
+        number_of_records = document.findtext("sru:numberOfRecords", "0", namespaces)
+        record = document.find(".//sru:recordData", namespaces)
+        if number_of_records == "0" or record is None:
+            return None, [], ""
+
+        def values(name):
+            return [
+                (element.text or "").strip()
+                for element in record.findall(f".//dc:{name}", namespaces)
+                if (element.text or "").strip()
+            ]
+
+        titles = values("title")
+        if not titles:
+            return None, [], "DNB returned a record without a title."
+        creators = values("creator")
+        publishers = values("publisher")
+        dates = values("date")
+        formats = values("format")
+        page_count = 0
+        for book_format in formats:
+            match = re.search(r"\b(\d+)\s*(?:Seiten|S\.|pages?|p\.)\b", book_format, re.I)
+            if match:
+                page_count = int(match.group(1))
+                break
+
+        return {
+            "isbn": isbn,
+            "title": titles[0],
+            "authors": ", ".join(creators) or "Unknown Author",
+            "publicationDate": dates[0] if dates else "",
+            "publisher": publishers[0] if publishers else "",
+            "pageCount": page_count,
+        }, [], ""
+    except requests.Timeout:
+        return None, [], "DNB request timed out."
+    except requests.RequestException as error:
+        return None, [], f"DNB network request failed: {error}"
+    except (ET.ParseError, ValueError, TypeError) as error:
+        return None, [], f"DNB returned invalid data: {error}"
+
+
 def _cover_file_path(filename):
     return COVER_CACHE_DIR / filename
 
@@ -261,6 +327,13 @@ def _lookup_book(isbn):
             warnings.append(error)
         if google_metadata and google_urls:
             cover_urls = google_urls
+
+    if not metadata:
+        dnb_metadata, _, error = _dnb_lookup(isbn)
+        if error:
+            warnings.append(error)
+        if dnb_metadata:
+            metadata = dnb_metadata
 
     if not metadata:
         if warnings:

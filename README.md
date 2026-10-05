@@ -47,7 +47,7 @@ Uploads use the required multipart field `metadata`, containing JSON with:
 | `publisher` | Optional |
 | `pageCount` | Optional |
 
-ISBN lookup checks the server's metadata cache, queries Open Library, then falls back to Google Books when needed. Cover files are cached under the persistent data directory. The authenticated lookup stores the scanned book on the user's server shelf and returns metadata with a `hasCover` flag. Clients fetch available covers from the authenticated cover route and cache image bytes locally. Provider warnings may be returned in the optional `warnings` list.
+ISBN lookup checks the server's metadata cache, then tries Open Library, Google Books, and the Deutsche Nationalbibliothek (DNB) SRU catalog in that order. The DNB fallback parses its public `oai_dc` XML response for metadata and does not provide a cover image. Cover files from providers that supply them are cached under the persistent data directory. The authenticated lookup stores the scanned book on the user's server shelf and returns metadata with a `hasCover` flag. Clients fetch available covers from the authenticated cover route and cache image bytes locally. Provider warnings may be returned in the optional `warnings` list.
 
 Sync responses contain `serverTime` and an `updates` list. Each update includes `isbn`, `title`, `authors`, `hasCover`, `publicationDate`, `publisher`, `pageCount`, `isDeleted`, and `lastModified`. Cover image bytes and URLs are not part of the sync payload. Deleted books are sent as tombstones so clients can remove them from their local shelves.
 
