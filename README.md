@@ -21,7 +21,7 @@ git checkout master
 
 ## API
 
-All book routes require an `Authorization: Bearer <token>` header.
+All book routes require an `Authorization: Bearer <token>` header. Authentication endpoints accept JSON request bodies.
 
 | Method | Route | Purpose |
 | --- | --- | --- |
@@ -32,7 +32,29 @@ All book routes require an `Authorization: Bearer <token>` header.
 | `POST` | `/api/books/upload` | Upload a book using multipart form fields. |
 | `DELETE` | `/api/books/delete/{isbn}` | Mark an existing book as deleted for synchronization. |
 
-For uploads, the required multipart field `metadata` contains JSON with `isbn`, `title`, and optional `authors`, `engineSource`, `coverUrl`, `publicationDate`, `publisher`, and `pageCount` fields. Sync responses include `serverTime` and an `updates` list with these metadata fields. The server stores the cover URL, not the image data. The updated schema does not migrate older server databases: delete `bookshelf.db` from the project directory for local runs, or `data/bookshelf.db` for Compose, before starting the updated service.
+### Book metadata
+
+Uploads use the required multipart field `metadata`, containing JSON with:
+
+| Field | Requirement |
+| --- | --- |
+| `isbn` | Required |
+| `title` | Required |
+| `authors` | Optional |
+| `engineSource` | Optional |
+| `coverUrl` | Optional; the server stores the URL, not image data |
+| `publicationDate` | Optional |
+| `publisher` | Optional |
+| `pageCount` | Optional |
+
+Sync responses include `serverTime` and an `updates` list containing these metadata fields.
+
+### Database compatibility
+
+The updated schema does not migrate older server databases. Before starting the updated service, remove the old database:
+
+- Local run: `bookshelf.db` in the project directory.
+- Docker Compose: `data/bookshelf.db`.
 
 ## Run locally
 
@@ -54,7 +76,9 @@ Start the development server from this directory:
 python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-The API is available at `http://127.0.0.1:8000`; interactive Swagger documentation is at `http://127.0.0.1:8000/docs`. With Compose, `bookshelf.db` is stored in `./data` next to `compose.yaml` and persists across container recreation.
+The API is available at `http://127.0.0.1:8000`; interactive Swagger documentation is at `http://127.0.0.1:8000/docs`.
+
+With Compose, `bookshelf.db` is stored in `./data` next to `compose.yaml` and persists across container recreation.
 
 ## Run with Docker Compose on Linux
 
@@ -80,7 +104,9 @@ sudo docker compose logs -f bookshelf-sync-server
 sudo docker compose down
 ```
 
-The API is available at `http://localhost:8000`. Compose publishes port 8000 on all host interfaces; use only on a trusted network with the current development server configuration.
+The API is available at `http://localhost:8000`.
+
+Compose publishes port 8000 on all host interfaces. With the current development server configuration, use it only on a trusted network.
 
 ## Update the Docker deployment
 
