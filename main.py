@@ -315,20 +315,20 @@ def _lookup_book(isbn, force_refresh=False):
         cover_file = cached["cover_file"] or ""
         return metadata, cover_file, []
 
-    metadata, cover_urls, error = _open_library_lookup(isbn)
+    metadata, cover_urls, error = _google_books_lookup(isbn)
     warnings = [error] if error else []
     if not metadata:
-        google_metadata, google_urls, error = _google_books_lookup(isbn)
+        open_library_metadata, open_library_urls, error = _open_library_lookup(isbn)
         if error:
             warnings.append(error)
-        if google_metadata:
-            metadata, cover_urls = google_metadata, google_urls
+        if open_library_metadata:
+            metadata, cover_urls = open_library_metadata, open_library_urls
     elif not cover_urls:
-        google_metadata, google_urls, error = _google_books_lookup(isbn)
+        open_library_metadata, open_library_urls, error = _open_library_lookup(isbn)
         if error:
             warnings.append(error)
-        if google_metadata and google_urls:
-            cover_urls = google_urls
+        if open_library_metadata and open_library_urls:
+            cover_urls = open_library_urls
 
     if not metadata:
         dnb_metadata, _, error = _dnb_lookup(isbn)
