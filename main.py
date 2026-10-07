@@ -185,7 +185,7 @@ def _dnb_lookup(isbn):
                 "operation": "searchRetrieve",
                 "query": f"num={isbn}",
                 "maximumRecords": 1,
-                "recordSchema": "oai_dc",
+                "recordSchema": "MARC21-xml",
             },
             headers={"User-Agent": _provider_user_agent()},
             timeout=(4, 12),
@@ -196,38 +196,79 @@ def _dnb_lookup(isbn):
         document = ET.fromstring(response.content)
         namespaces = {
             "sru": "http://www.loc.gov/zing/srw/",
-            "dc": "http://purl.org/dc/elements/1.1/",
+            "marc": "http://www.loc.gov/MARC21/slim",
         }
         number_of_records = document.findtext("sru:numberOfRecords", "0", namespaces)
-        record = document.find(".//sru:recordData", namespaces)
+        record = document.find(".//sru:recordData/marc:record", namespaces)
         if number_of_records == "0" or record is None:
             return None, [], ""
 
-        def values(name):
+        def fields(tag):
+            return [
+                element for element in record.findall(f"marc:datafield[@tag='{tag}']", namespaces)
+            ]
+
+        def subfield_values(field, code):
             return [
                 (element.text or "").strip()
-                for element in record.findall(f".//dc:{name}", namespaces)
+                for element in field.findall(f"marc:subfield[@code='{code}']", namespaces)
                 if (element.text or "").strip()
             ]
 
-        titles = values("title")
-        if not titles:
+        title = ""
+        for title_field in fields("245"):
+            title_parts = [
+                value
+                for code in ("a", "b", "n", "p")
+                for value in subfield_values(title_field, code)
+            ]
+            if title_parts:
+                title = " ".join(title_parts)
+                break
+        if not title:
             return None, [], "DNB returned a record without a title."
-        creators = values("creator")
-        publishers = values("publisher")
-        dates = values("date")
-        formats = values("format")
+
+        authors = []
+        for tag in ("100", "700"):
+            for author_field in fields(tag):
+                relator_codes = [value.casefold() for value in subfield_values(author_field, "4")]
+                relator_terms = [value.casefold() for value in subfield_values(author_field, "e")]
+                is_author = "aut" in relator_codes or any(
+                    "author" in term or "autor" in term or "verfasser" in term
+                    for term in relator_terms
+                )
+                names = subfield_values(author_field, "a")
+                if not is_author or not names:
+                    continue
+                name = names[0]
+                if author_field.get("ind1") == "1" and ", " in name:
+                    family_name, given_name = name.split(", ", 1)
+                    name = f"{given_name} {family_name}"
+                if name not in authors:
+                    authors.append(name)
+
+        publishers = subfield_values(fields("264")[0], "b") if fields("264") else []
+        if not publishers and fields("260"):
+            publishers = subfield_values(fields("260")[0], "b")
+        dates = subfield_values(fields("264")[0], "c") if fields("264") else []
+        if not dates and fields("260"):
+            dates = subfield_values(fields("260")[0], "c")
+        formats = [
+            value
+            for format_field in fields("300")
+            for value in subfield_values(format_field, "a")
+        ]
         page_count = 0
         for book_format in formats:
-            match = re.search(r"\b(\d+)\s*(?:Seiten|S\.|pages?|p\.)\b", book_format, re.I)
+            match = re.search(r"\b(\d+)\s*(?:Seiten|S\.|pages?|p\.)", book_format, re.I)
             if match:
                 page_count = int(match.group(1))
                 break
 
         return {
             "isbn": isbn,
-            "title": titles[0],
-            "authors": ", ".join(creators) or "Unknown Author",
+            "title": title,
+            "authors": ", ".join(authors) or "Unknown Author",
             "publicationDate": dates[0] if dates else "",
             "publisher": publishers[0] if publishers else "",
             "pageCount": page_count,
