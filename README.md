@@ -30,6 +30,7 @@ Lookup, bookshelf, and cached-cover routes require an `Authorization: Bearer <to
 | `POST` | `/api/auth/login` | Authenticate and receive a JWT. JSON body: `username`, `password`. |
 | `POST` | `/api/books/lookup` | Resolve an ISBN, cache its cover, add the book to the signed-in user's shelf, and return metadata. JSON body: `isbn`. |
 | `GET` | `/api/books/cover/{isbn}` | Serve the cached cover image for an ISBN on the authenticated user's shelf. |
+| `PUT` | `/api/books/cover/{isbn}` | Replace the cached cover image for an ISBN on the authenticated user's active shelf. Send raw JPEG, PNG, or WebP image bytes with the matching `Content-Type`; maximum upload size is 25 MB. |
 | `GET` | `/api/books/sync?since=<unix-seconds>` | Fetch the authenticated user's updates after the checkpoint. |
 | `POST` | `/api/books/upload` | Upload a book using multipart form fields. |
 | `DELETE` | `/api/books/delete/{isbn}` | Mark an existing book as deleted for synchronization. |
@@ -47,7 +48,7 @@ Uploads use the required multipart field `metadata`, containing JSON with:
 | `publisher` | Optional |
 | `pageCount` | Optional |
 
-ISBN lookup checks the server's metadata cache, then tries Open Library, Google Books, and the Deutsche Nationalbibliothek (DNB) SRU catalog in that order. The DNB fallback parses its public `oai_dc` XML response for metadata and does not provide a cover image. Cover files from providers that supply them are cached under the persistent data directory. The authenticated lookup stores the scanned book on the user's server shelf and returns metadata with a `hasCover` flag. Clients fetch available covers from the authenticated cover route and cache image bytes locally. Provider warnings may be returned in the optional `warnings` list.
+ISBN lookup checks the server's metadata cache, then tries Open Library, Google Books, and the Deutsche Nationalbibliothek (DNB) SRU catalog in that order. The DNB fallback parses its public `oai_dc` XML response for metadata and does not provide a cover image. Cover files from providers that supply them are cached under the persistent data directory. The authenticated lookup stores the scanned book on the user's server shelf and returns metadata with a `hasCover` flag. Clients fetch available covers from the authenticated cover route and cache image bytes locally. A client may replace a cached cover with `PUT /api/books/cover/{isbn}`; the upload requires that ISBN to be active on the caller's shelf, updates the shared ISBN cover cache, and advances that user's book modification timestamp. Provider warnings may be returned in the optional `warnings` list.
 
 Sync responses contain `serverTime` and an `updates` list. Each update includes `isbn`, `title`, `authors`, `hasCover`, `publicationDate`, `publisher`, `pageCount`, `isDeleted`, and `lastModified`. Cover image bytes and URLs are not part of the sync payload. Deleted books are sent as tombstones so clients can remove them from their local shelves.
 

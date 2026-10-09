@@ -5,9 +5,10 @@ import os
 import re
 import sqlite3
 import time
+import uuid
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from fastapi import FastAPI, Depends, HTTPException, Form
+from fastapi import FastAPI, Depends, HTTPException, Form, Request
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
@@ -510,6 +511,72 @@ def get_book_cover(isbn: str, user_id: int = Depends(get_current_user_id)):
         media_type=cached["cover_content_type"] or "image/jpeg",
         headers={"Cache-Control": "private, max-age=86400"},
     )
+
+
+@app.put("/api/books/cover/{isbn}")
+async def upload_book_cover(isbn: str, request: Request,
+                            user_id: int = Depends(get_current_user_id)):
+    isbn = isbn.strip().replace("-", "")
+    if not isbn.isdigit() or len(isbn) not in (10, 13):
+        raise HTTPException(status_code=400, detail="ISBN must contain 10 or 13 digits.")
+
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    image_formats = {
+        "image/jpeg": lambda data: data.startswith(b"\xff\xd8\xff"),
+        "image/png": lambda data: data.startswith(b"\x89PNG\r\n\x1a\n"),
+        "image/webp": lambda data: data.startswith(b"RIFF") and data[8:12] == b"WEBP",
+    }
+    if content_type not in image_formats:
+        raise HTTPException(status_code=415, detail="Cover must be a JPEG, PNG, or WebP image.")
+
+    image_data = await request.body()
+    if not image_data:
+        raise HTTPException(status_code=400, detail="Cover image is empty.")
+    if len(image_data) > 25 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Cover image exceeds the 25 MB limit.")
+    if not image_formats[content_type](image_data):
+        raise HTTPException(status_code=400, detail="Cover image data does not match its content type.")
+
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.row_factory = sqlite3.Row
+        book = conn.execute(
+            "SELECT title, authors, publication_date, publisher, page_count "
+            "FROM books WHERE isbn = ? AND user_id = ? AND is_deleted = 0",
+            (isbn, user_id),
+        ).fetchone()
+    if not book:
+        raise HTTPException(status_code=404, detail="Book is not on this user's shelf.")
+
+    COVER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    filename = hashlib.sha256(isbn.encode("utf-8")).hexdigest() + ".img"
+    destination = _cover_file_path(filename)
+    temporary = destination.with_name(destination.name + f".{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_bytes(image_data)
+        os.replace(temporary, destination)
+    except OSError as error:
+        temporary.unlink(missing_ok=True)
+        logger.warning("Could not save uploaded cover for ISBN %s: %s", isbn, error)
+        raise HTTPException(status_code=500, detail="Could not save the cover image.") from error
+
+    modified = int(time.time())
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO book_metadata_cache (
+                   isbn, title, authors, cover_file, cover_content_type,
+                   publication_date, publisher, page_count
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (isbn, book["title"], book["authors"] or "", filename, content_type,
+             book["publication_date"] or "", book["publisher"] or "",
+             book["page_count"] or 0),
+        )
+        conn.execute(
+            "UPDATE books SET last_modified = ? WHERE isbn = ? AND user_id = ?",
+            (modified, isbn, user_id),
+        )
+        conn.commit()
+
+    return {"success": True, "isbn": isbn, "lastModified": modified}
 
 # =================================================================
 # 2. BOOKSHELF GRID SYNCING ENDPOINTS
