@@ -571,8 +571,8 @@ async def upload_book_cover(isbn: str, request: Request,
              book["page_count"] or 0),
         )
         conn.execute(
-            "UPDATE books SET last_modified = ? WHERE isbn = ? AND user_id = ?",
-            (modified, isbn, user_id),
+            "UPDATE books SET last_modified = ? WHERE isbn = ? AND is_deleted = 0",
+            (modified, isbn),
         )
         conn.commit()
 
