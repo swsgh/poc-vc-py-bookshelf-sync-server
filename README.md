@@ -73,11 +73,26 @@ Activate the environment, then install dependencies:
 python -m pip install -r requirements.txt
 ```
 
-Set `OPEN_LIBRARY_CONTACT_EMAIL` and `GOOGLE_BOOKS_API_KEY` in the server environment before starting it. These provider credentials are used only by the server, never by scanner clients.
+`JWT_SECRET` is required when starting the server and must be at least 32 characters.
+Set it to a private random value; never use a checked-in or shared example value.
+`OPEN_LIBRARY_CONTACT_EMAIL` and `GOOGLE_BOOKS_API_KEY` are optional provider
+settings. They are used only by the server, never by scanner clients.
 
 Start the development server from this directory:
 
+```powershell
+$env:JWT_SECRET = python -c "import secrets; print(secrets.token_urlsafe(48))"
+python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+On Linux, create and activate the environment, then set the secret in the current
+shell before starting the server:
+
 ```sh
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements.txt
+export JWT_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
 python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
@@ -85,56 +100,70 @@ The API is available at `http://127.0.0.1:8000`; interactive Swagger documentati
 
 With Compose, `bookshelf.db` is stored in `./data` next to `compose.yaml` and persists across container recreation.
 
-## Run with Docker Compose on Linux
+## Run with Docker Compose
 
-Requires Docker Engine and the Docker Compose plugin to be installed and running.
+Requires Docker Desktop or Docker Engine with Compose enabled. From this directory,
+create `.env` from the example. Generate a fresh secret, then paste the output after
+`JWT_SECRET=` in `.env`:
 
-Create a `.env` file next to `compose.yaml` with these settings:
-
-```dotenv
-OPEN_LIBRARY_CONTACT_EMAIL=you@example.org
-GOOGLE_BOOKS_API_KEY=replace-with-your-google-books-key
+```powershell
+Copy-Item .env.example .env
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+notepad .env
 ```
 
-Compose passes these values only to the server. The existing `./data` volume stores both the SQLite database and cached cover files.
+`secrets.token_urlsafe(48)` generates a cryptographically secure value longer than
+the server's 32-character minimum. Keep the value private and do not commit `.env`.
 
-1. Verify Docker and Compose are available:
+On Linux, use `cp` and your preferred editor. Replace the `JWT_SECRET` placeholder
+with the generated value:
 
 ```sh
-sudo docker version
-sudo docker compose version
+cp .env.example .env
+python3 -c 'import secrets; print(secrets.token_urlsafe(48))'
+${EDITOR:-nano} .env
 ```
 
-2. From the cloned project directory, build and start the service:
+Provider settings in `.env` are optional. Build the image and start the service:
+
+```powershell
+docker compose up --build -d
+docker compose logs -f bookshelf-sync-server
+```
+
+The same commands work on Linux with Docker Engine and the Compose plugin. If your
+Linux user does not have permission to access Docker, prefix the Docker commands
+with `sudo`.
+
+The `./data` directory is mounted at `/data` and stores `bookshelf.db` and cached
+cover files. Application code and installed dependencies are baked into the image;
+the source tree is not mounted into the running container. The API is available at
+`http://localhost:8000`.
+
+Stop the container without deleting data:
 
 ```sh
-sudo docker compose up --build -d
+docker compose down
 ```
 
-3. Follow the service logs or stop it when finished:
-
-```sh
-sudo docker compose logs -f bookshelf-sync-server
-sudo docker compose down
-```
-
-The API is available at `http://localhost:8000`.
-
-Compose publishes port 8000 on all host interfaces. With the current development server configuration, use it only on a trusted network.
+Compose publishes port 8000 on all host interfaces. Use it only on a trusted
+network; do not expose this development service directly to the public internet.
 
 ## Update the Docker deployment
 
-From the server project directory, fetch the latest checked-out server code and base image, then recreate the service:
+From the server project directory, fetch the latest code, rebuild the image, and
+recreate the service:
 
 ```sh
 git pull --ff-only
-sudo docker compose pull
-sudo docker compose up -d --force-recreate
-sudo docker compose logs --tail=100 bookshelf-sync-server
+docker compose up --build -d
+docker compose logs --tail=100 bookshelf-sync-server
 ```
 
 The SQLite database in `./data` is preserved. Do not remove that directory when updating.
 
 ## Development security
 
-The current `JWT_SECRET` in `main.py` is a hard-coded development value. Replace it with a securely managed secret before use outside a local development environment. The development server uses plain HTTP and should not be exposed directly to the public internet.
+The server has no JWT-secret fallback: `JWT_SECRET` must be set for direct runs and
+is required by Compose from `.env`. Keep `.env` private. Use a securely managed
+secret and HTTPS before deploying beyond a trusted development network.

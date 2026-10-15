@@ -19,11 +19,15 @@ import requests
 app = FastAPI(title="Bookshelf Sync Server")
 
 # --- DATABASE SETUP ---
-DB_FILE = "bookshelf.db"
+DB_FILE = os.environ.get("BOOKSHELF_DB_PATH", "bookshelf.db")
 COVER_CACHE_DIR = Path(os.environ.get("BOOK_COVER_CACHE_DIR", "covers"))
+JWT_SECRET = os.environ.get("JWT_SECRET", "").strip()
+if len(JWT_SECRET) < 32:
+    raise RuntimeError("Set JWT_SECRET to a random value of at least 32 characters.")
 logger = logging.getLogger("bookshelf.metadata")
 
 def init_db():
+    Path(DB_FILE).parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -69,7 +73,6 @@ def health_check():
     return {"status": "ok"}
 
 # --- SECURITY CONFIGURATION ---
-JWT_SECRET = "super_secret_key_change_this_in_production"
 # (REMOVED: pwd_context = CryptContext(...) line completely)
 ALGORITHM = "HS256"
 security = HTTPBearer()
