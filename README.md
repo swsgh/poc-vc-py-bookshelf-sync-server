@@ -27,13 +27,27 @@ Lookup, bookshelf, and cached-cover routes require an `Authorization: Bearer <to
 | --- | --- | --- |
 | `GET` | `/health` | Check that the sync server is reachable. |
 | `POST` | `/api/auth/register` | Create an account. JSON body: `username`, `password`. |
-| `POST` | `/api/auth/login` | Authenticate and receive a JWT. JSON body: `username`, `password`. |
+| `POST` | `/api/auth/login` | Authenticate and receive a 15-minute access token. JSON body: `username`, `password`, optional `staySignedIn` (defaults to `false`). Opt-in login also returns a refresh token. |
+| `POST` | `/api/auth/refresh` | Rotate a refresh token and issue a new access token. JSON body: `refreshToken`. |
+| `POST` | `/api/auth/logout` | Revoke the refresh-token family. JSON body: `refreshToken`. |
 | `POST` | `/api/books/lookup` | Resolve an ISBN, cache its cover, add the book to the signed-in user's shelf, and return metadata. JSON body: `isbn`. |
 | `GET` | `/api/books/cover/{isbn}` | Serve the cached cover image for an ISBN on the authenticated user's shelf. |
 | `PUT` | `/api/books/cover/{isbn}` | Replace the cached cover image for an ISBN on the authenticated user's active shelf. Send raw JPEG, PNG, or WebP image bytes with the matching `Content-Type`; maximum upload size is 25 MB. |
 | `GET` | `/api/books/sync?since=<unix-seconds>` | Fetch the authenticated user's updates after the checkpoint. |
 | `POST` | `/api/books/upload` | Upload a book using multipart form fields. |
 | `DELETE` | `/api/books/delete/{isbn}` | Mark an existing book as deleted for synchronization. |
+
+Refresh tokens are opaque, valid for 30 days, and stored server-side only as
+SHA-256 hashes. Each refresh rotates the token in the same family. Reuse of a
+rotated token revokes that family; logout also revokes it. Clients should keep
+access tokens in memory and store opt-in refresh tokens only in platform secure
+storage.
+
+Run the isolated authentication-session tests from this directory with:
+
+```powershell
+python -m unittest test_auth_sessions
+```
 
 ### Book metadata
 
@@ -97,6 +111,14 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 The API is available at `http://127.0.0.1:8000`; interactive Swagger documentation is at `http://127.0.0.1:8000/docs`.
+
+## Run authentication tests
+
+The isolated refresh-session tests use a temporary SQLite database:
+
+```powershell
+python -m unittest test_auth_sessions
+```
 
 With Compose, `bookshelf.db` is stored in `./data` next to `compose.yaml` and persists across container recreation.
 

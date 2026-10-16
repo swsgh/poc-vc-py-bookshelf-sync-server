@@ -3,6 +3,7 @@ import hashlib
 import logging
 import os
 import re
+import secrets
 import sqlite3
 import time
 import uuid
@@ -64,6 +65,21 @@ def init_db():
                 page_count INTEGER
             )
         """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS refresh_tokens (
+                token_hash TEXT PRIMARY KEY,
+                family_id TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                revoked_at INTEGER,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS refresh_tokens_family
+            ON refresh_tokens (family_id, revoked_at)
+        """)
         conn.commit()
 
 init_db()
@@ -76,10 +92,17 @@ def health_check():
 # (REMOVED: pwd_context = CryptContext(...) line completely)
 ALGORITHM = "HS256"
 security = HTTPBearer()
+ACCESS_TOKEN_LIFETIME_SECONDS = 15 * 60
+REFRESH_TOKEN_LIFETIME_SECONDS = 30 * 24 * 60 * 60
 
 class UserAuth(BaseModel):
     username: str
     password: str
+    staySignedIn: bool = False
+
+
+class RefreshTokenRequest(BaseModel):
+    refreshToken: str
 
 
 class IsbnLookup(BaseModel):
@@ -412,6 +435,41 @@ def get_current_user_id(credentials: HTTPAuthorizationCredentials = Depends(secu
     except jwt.PyJWTError:
         raise HTTPException(status_code=401, detail="Invalid or expired session token")
 
+
+def _issue_access_token(user):
+    now = int(time.time())
+    return jwt.encode(
+        {
+            "id": user["id"],
+            "username": user["username"],
+            "iat": now,
+            "exp": now + ACCESS_TOKEN_LIFETIME_SECONDS,
+        },
+        JWT_SECRET,
+        algorithm=ALGORITHM,
+    )
+
+
+def _hash_refresh_token(token):
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _create_refresh_token(conn, user_id, family_id, now):
+    token = secrets.token_urlsafe(48)
+    conn.execute(
+        "INSERT INTO refresh_tokens "
+        "(token_hash, family_id, user_id, created_at, expires_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (
+            _hash_refresh_token(token),
+            family_id,
+            user_id,
+            now,
+            now + REFRESH_TOKEN_LIFETIME_SECONDS * 1000,
+        ),
+    )
+    return token
+
 # =================================================================
 # 1. ACCOUNT MANAGEMENT ENDPOINTS
 # =================================================================
@@ -450,9 +508,102 @@ def login(user: UserAuth):
     if not is_valid:
         raise HTTPException(status_code=400, detail="Incorrect username or password")
 
-    expires = int(time.time()) + (30 * 24 * 60 * 60)
-    token = jwt.encode({"id": db_user["id"], "exp": expires}, JWT_SECRET, algorithm=ALGORITHM)
-    return {"token": token}
+    response = {
+        "token": _issue_access_token(db_user),
+        "token_type": "bearer",
+        "username": db_user["username"],
+    }
+    if user.staySignedIn:
+        now = int(time.time() * 1000)
+        family_id = secrets.token_urlsafe(24)
+        with sqlite3.connect(DB_FILE) as conn:
+            response["refreshToken"] = _create_refresh_token(
+                conn, db_user["id"], family_id, now
+            )
+    return response
+
+
+@app.post("/api/auth/refresh")
+def refresh_session(payload: RefreshTokenRequest):
+    supplied_hash = _hash_refresh_token(payload.refreshToken)
+    now = int(time.time() * 1000)
+    response = None
+    failed = False
+
+    with sqlite3.connect(DB_FILE, timeout=15) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN IMMEDIATE")
+        stored = conn.execute(
+            "SELECT token_hash, family_id, user_id, expires_at, revoked_at "
+            "FROM refresh_tokens WHERE token_hash = ?",
+            (supplied_hash,),
+        ).fetchone()
+
+        if stored is None:
+            failed = True
+        elif stored["revoked_at"] is not None:
+            conn.execute(
+                "UPDATE refresh_tokens SET revoked_at = COALESCE(revoked_at, ?) "
+                "WHERE family_id = ?",
+                (now, stored["family_id"]),
+            )
+            failed = True
+        elif stored["expires_at"] <= now:
+            conn.execute(
+                "UPDATE refresh_tokens SET revoked_at = COALESCE(revoked_at, ?) "
+                "WHERE family_id = ?",
+                (now, stored["family_id"]),
+            )
+            failed = True
+        else:
+            revoked = conn.execute(
+                "UPDATE refresh_tokens SET revoked_at = ? "
+                "WHERE token_hash = ? AND revoked_at IS NULL",
+                (now, supplied_hash),
+            )
+            user_row = conn.execute(
+                "SELECT id, username FROM users WHERE id = ?",
+                (stored["user_id"],),
+            ).fetchone()
+            if revoked.rowcount != 1 or user_row is None:
+                conn.execute(
+                    "UPDATE refresh_tokens SET revoked_at = COALESCE(revoked_at, ?) "
+                    "WHERE family_id = ?",
+                    (now, stored["family_id"]),
+                )
+                failed = True
+            else:
+                next_token = _create_refresh_token(
+                    conn, user_row["id"], stored["family_id"], now
+                )
+                response = {
+                    "token": _issue_access_token(user_row),
+                    "token_type": "bearer",
+                    "username": user_row["username"],
+                    "refreshToken": next_token,
+                }
+
+    if failed or response is None:
+        raise HTTPException(status_code=401, detail="Invalid, expired, or reused refresh token.")
+    return response
+
+
+@app.post("/api/auth/logout")
+def logout_session(payload: RefreshTokenRequest):
+    supplied_hash = _hash_refresh_token(payload.refreshToken)
+    now = int(time.time() * 1000)
+    with sqlite3.connect(DB_FILE) as conn:
+        token = conn.execute(
+            "SELECT family_id FROM refresh_tokens WHERE token_hash = ?",
+            (supplied_hash,),
+        ).fetchone()
+        if token is not None:
+            conn.execute(
+                "UPDATE refresh_tokens SET revoked_at = COALESCE(revoked_at, ?) "
+                "WHERE family_id = ?",
+                (now, token[0]),
+            )
+    return {"revoked": True}
 
 
 @app.post("/api/books/lookup")
